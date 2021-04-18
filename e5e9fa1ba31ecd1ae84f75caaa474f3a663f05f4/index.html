@@ -1,5 +1,345 @@
-<html>
-<i>There are two rules for success: 1) Never tell everything you know.</i>
-<br><br>
-― Roger H. Lincoln
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="A tool to detect copy minters in Hic et nunc">
+<meta name="author" content="Javier Gracia Carpio (jagracar)">
+<title>Fuck copy minters</title>
+
+<style>
+    table {
+        font-family: Helvetica, sans-serif;
+        font-size: small;
+        width: 100%;
+    }
+
+    tbody {
+        font-family: "Courier New", monospace;
+    }
+
+    td, th {
+        border: 1px solid rgb(190, 190, 190);
+        padding: 0.4em;
+    }
+
+    td {
+        text-align: center;
+    }
+
+    td a {
+        text-decoration: none;
+    }
+
+    th {
+        background-color: #696969;
+        color: #fff;
+    }
+
+    th:first-of-type {
+        background-color: white;
+        border-width: 0;
+    }
+
+    .fixedWidth {
+        width: 6em;
+    }
+
+    .alert {
+        background-color: rgb(255, 100, 100);
+    }
+
+    .ok {
+        background-color: rgb(150, 255, 150);
+    }
+</style>
+</head>
+
+<body>
+<table>
+    <thead>
+        <tr>
+            <th scope="col"></th>
+            <th scope="col">Wallet id</th>
+            <th scope="col">Alias</th>
+            <th scope="col">hic et nunc profile</th>
+            <th scope="col">Connection wallet</th>
+            <th scope="col" class="fixedWidth">Direct link to black list?</th>
+            <th scope="col" class="fixedWidth">HEC activity in the last days?</th>
+            <th scope="col" class="fixedWidth">Has minted OBJKTs in the last days?</th>
+        </tr>
+    </thead>
+    <tbody id="output">
+    </tbody>
+</table>
+
+<script>
+    var maxQueries, timestamp, blackList, whiteList;
+    var githubBlackList, githubBlackListRequestFinished, githubWhiteList, githubWhiteListRequestFinished;
+    var connectedWallets, hasHenActivity, hasMintedObjkt, requestFinished;
+    var githubBlackListAdded, githubWhiteListAdded, allRequestsFinished, blackListCounter, walletIdToQuery;
+
+    maxQueries = 1000;
+    //timestamp = "2021-04-16T00:00:00Z";
+
+    blackList = {
+        //"" : {"alias": "", "counter": 1, "connectionWallet": "user", "hasHenActivity": false, "hasMintedObjkt": false},
+    };
+
+    whiteList = {
+        //"" : {"alias": ""},
+    };
+
+    // Downloads the HEN github back list
+    function getGithubBlackList() {
+        var url, xmlhttp;
+
+        url = "https://raw.githubusercontent.com/hicetnunc2000/hicetnunc/main/filters/w.json";
+        xmlhttp = new XMLHttpRequest();
+
+        xmlhttp.onreadystatechange = function() {
+            if (this.readyState == 4) {
+                githubBlackList = JSON.parse(this.responseText);
+                githubBlackListRequestFinished = true;
+            }
+        };
+
+        githubBlackList = {};
+        githubBlackListRequestFinished = false;
+        xmlhttp.open("GET", url, true);
+        xmlhttp.send();
+    }
+
+    // Downloads the HEN github white list
+    function getGithubWhiteList() {
+        var url, xmlhttp;
+
+        url = "https://raw.githubusercontent.com/hicetnunc2000/hicetnunc/main/filters/allow.json";
+        xmlhttp = new XMLHttpRequest();
+
+        xmlhttp.onreadystatechange = function() {
+            if (this.readyState == 4) {
+                githubWhiteList = JSON.parse(this.responseText);
+                githubWhiteListRequestFinished = true;
+            }
+        };
+
+        githubWhiteList = {};
+        githubWhiteListRequestFinished = false;
+        xmlhttp.open("GET", url, true);
+        xmlhttp.send();
+    }
+
+    // Gets the connected wallets metadata information from a given wallet
+    function getConnectedWallets(walletId, timestamp) {
+        var url, xmlhttp;
+
+        url = "https://api.tzkt.io/v1/accounts/" + walletId + "/operations?timestamp.ge=" + timestamp;
+        xmlhttp = new XMLHttpRequest();
+
+        xmlhttp.onreadystatechange = function() {
+            var i, operations, operation, address, alias;
+
+            if (this.readyState == 4) {
+                if(this.status == 200) {
+                    operations = JSON.parse(this.responseText);
+
+                    for (i in operations){
+                        operation = operations[i];
+
+                        if (operation.type == "transaction") {
+                            if (operation.sender.address == walletId) {
+                                address = operation.target.address;
+                                alias = operation.target.alias? operation.target.alias : "";
+                            } else {
+                                address = operation.sender.address;
+                                alias = operation.sender.alias? operation.sender.alias : "";
+                            }
+
+                            if (address.startsWith("tz")) {
+                                if (!connectedWallets[address]) {
+                                    connectedWallets[address] = {"alias": alias};
+                                }
+                            } else if (address == "KT1Hkg5qeNhfwpKW4fXvq7HGZB9z2EnmCCA9" || address == "KT1RJ6PbjHpwc3M5rw5s2Nbmefwbuwbdxton") {
+                                hasHenActivity = true;
+
+                                if (operation.parameter && operation.parameter.entrypoint == "mint_OBJKT") {
+                                    hasMintedObjkt = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                requestFinished = true;
+            }
+        };
+
+        connectedWallets = {};
+        hasHenActivity = false;
+        hasMintedObjkt = false;
+        requestFinished = false;
+        xmlhttp.open("GET", url, true);
+        xmlhttp.send();
+    }
+
+    // Creates a table cell element with some text
+    function createTableCell(text, className) {
+        var td = document.createElement("td");
+        td.appendChild(document.createTextNode(text));
+
+        if (className) {
+            td.className = className;
+        }
+
+        return td;
+    }
+
+    // Creates a table cell element with a link
+    function createTableLink(text, url, className) {
+        var td = document.createElement("td");
+        td.appendChild(createLink(text, url));
+
+        if (className) {
+            td.className = className;
+        }
+
+        return td;
+    }
+
+    // Creates a link element
+    function createLink(text, url) {
+        var a = document.createElement("a");
+        a.appendChild(document.createTextNode(text));
+        a.href = url;
+        a.target = "_blank";
+        return a;
+    }
+
+    // Runs the main tool
+    function run() {
+        var i, walletId, wallet, output, counter, tr;
+
+        // Check if the github black list request has finished and the black list has not been added
+        if (githubBlackListRequestFinished && !githubBlackListAdded) {
+            // Add the github black list to the global black list
+            for (i in githubBlackList) {
+                walletId = githubBlackList[i];
+
+                if (!blackList[walletId]) {
+                    blackList[walletId] = {"alias": "", "counter": 1, "connectionWallet": "github", "hasHenActivity": false, "hasMintedObjkt": false};
+                }
+            }
+
+            githubBlackListAdded = true;
+
+            // Download the github white list
+            console.log("Downloading the HEN github white list...");
+            getGithubWhiteList();
+        }
+
+        // Check if the github white list request has finished and the white list has not been added
+        if (githubWhiteListRequestFinished && !githubWhiteListAdded) {
+            // Add the github white list to the global white list
+            for (walletId in githubWhiteList) {
+                if (!whiteList[walletId]) {
+                    whiteList[walletId] = githubWhiteList[walletId];
+                }
+            }
+
+            githubWhiteListAdded = true;
+
+            // Get the connected wallets for the first wallet in the black list
+            console.log("Querying for connected wallets...");
+            blackListCounter = 0;
+            walletIdToQuery = Object.keys(blackList)[blackListCounter];
+            getConnectedWallets(walletIdToQuery, "2021-03-01T00:00:00Z");
+            blackListCounter++;
+        }
+
+        // Check if the request for the connected wallets has finished
+        if (requestFinished) {
+            // Add the HEN information to the wallet that has just been queried
+            blackList[walletIdToQuery]["hasHenActivity"] = hasHenActivity;
+            blackList[walletIdToQuery]["hasMintedObjkt"] = hasMintedObjkt;
+
+            // Add the connected wallet ids to the black list
+            for (walletId in connectedWallets) {
+                if (!whiteList[walletId]) {
+                    if (blackList[walletId]) {
+                        blackList[walletId].counter++;
+                    } else {
+                        blackList[walletId] = {"alias": connectedWallets[walletId].alias, "counter": 1, "connectionWallet": walletIdToQuery, "hasHenActivity": false, "hasMintedObjkt": false};
+                    }
+                }
+            }
+
+            // Get the connected wallets for the next wallet in the black list
+            if (blackListCounter < Object.keys(blackList).length && blackListCounter < maxQueries) {
+                walletIdToQuery = Object.keys(blackList)[blackListCounter];
+                wallet = blackList[walletIdToQuery];
+
+                if (wallet.connectionWallet == "github" || wallet.connectionWallet == "user") {
+                    getConnectedWallets(walletIdToQuery, "2021-03-01T00:00:00Z");
+                } else {
+                    getConnectedWallets(walletIdToQuery, timestamp);
+                }
+
+                blackListCounter++;
+            } else {
+                allRequestsFinished = true;
+            }
+        }
+
+        // Repeat until all requests have finished
+        if (!allRequestsFinished) {
+            window.requestAnimationFrame(run);
+        } else {
+            // Fill the output table
+            output = document.getElementById("output");
+            counter = 1;
+
+            for (walletId in blackList) {
+                wallet = blackList[walletId];
+
+                if (wallet.connectionWallet != "github") {
+                    tr = document.createElement("tr");
+                    tr.appendChild(createTableCell(counter.toString()));
+                    tr.appendChild(createTableLink(walletId, "https://tzstats.com/" + walletId));
+                    tr.appendChild(createTableCell(wallet.alias));
+                    tr.appendChild(createTableLink("HEN link", "https://www.hicetnunc.xyz/tz/" + walletId));
+                    tr.appendChild(createTableLink(wallet.connectionWallet, "https://tzstats.com/" + wallet.connectionWallet));
+                    tr.appendChild(createTableCell("", blackList[wallet.connectionWallet].connectionWallet == "github"? "alert" : "ok"));
+                    tr.appendChild(createTableCell("", wallet.hasHenActivity? "alert" : "ok"));
+                    tr.appendChild(createTableCell("", wallet.hasMintedObjkt? "alert" : "ok"));
+                    output.appendChild(tr);
+                    counter++;
+                }
+            }
+        }
+    }
+
+    window.onload = function() {
+        var threeDaysAgo;
+
+        // Calculate the time stamp to use if it has not been provided by the user
+        if (!timestamp) {
+            threeDaysAgo = new Date();
+            threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+            timestamp = threeDaysAgo.toISOString();
+        }
+
+        // Set the control flags to false
+        githubBlackListAdded = false;
+        githubWhiteListAdded = false;
+        allRequestsFinished = false;
+
+        // Download the github black list
+        console.log("Downloading the HEN github black list...");
+        getGithubBlackList();
+
+        run();
+    };
+</script>
+</body>
 </html>
